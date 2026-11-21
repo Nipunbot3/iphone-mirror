@@ -1,0 +1,74 @@
+name: Build iPhone Mirror
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-libplist
+            mingw-w64-ucrt-x86_64-gstreamer
+            mingw-w64-ucrt-x86_64-gst-plugins-base
+            mingw-w64-ucrt-x86_64-gst-plugins-good
+            mingw-w64-ucrt-x86_64-gst-plugins-bad
+            mingw-w64-ucrt-x86_64-gst-plugins-ugly
+            mingw-w64-ucrt-x86_64-gst-libav
+
+      - name: Build UxPlay
+        shell: msys2 {0}
+        run: |
+          set -x
+          git clone https://github.com/FDH2/UxPlay.git
+          cd UxPlay
+          mkdir build && cd build
+          if cmake -G Ninja -DCMAKE_BUILD_TYPE=Release .. && ninja; then
+            echo "Built latest source"
+          else
+            echo "Latest failed; falling back to v1.73.7 + Bonjour SDK headers"
+            cd .. && rm -rf build && git checkout v1.73.7
+            git clone --depth 1 https://github.com/G-P-S/bonjour-win-sdk.git /c/BonjourSDK
+            export BONJOUR_SDK_HOME="C:\\BonjourSDK"
+            mkdir build && cd build
+            cmake -G Ninja -DCMAKE_BUILD_TYPE=Release ..
+            ninja
+          fi
+          ls -l uxplay.exe
+
+      - name: Package engine
+        shell: msys2 {0}
+        run: |
+          set -e
+          WS=$(cygpath -u "$GITHUB_WORKSPACE")
+          ENG="$WS/dist/iPhoneMirror/engine"
+          mkdir -p "$ENG/plugins"
+          cp "$WS/UxPlay/build/uxplay.exe" "$ENG/"
+          cp /ucrt64/libexec/gstreamer-1.0/gst-plugin-scanner.exe "$ENG/" || echo "no scanner"
+          cp /ucrt64/lib/gstreamer-1.0/*.dll "$ENG/plugins/"
+          for f in "$ENG"/*.exe "$ENG"/plugins/*.dll; do
+            ldd "$f" 2>/dev/null | awk '/\/ucrt64\// {print $3}'
+          done | sort -u | while read -r dll; do cp -n "$dll" "$ENG/" || true; done
+          du -sh "$ENG"
+
+      - name: Compile launcher (iPhoneMirror.exe)
+        shell: cmd
+        run: |
+          "%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:winexe /out:dist\iPhoneMirror\iPhoneMirror.exe /r:System.Windows.Forms.dll /r:System.Drawing.dll iPhoneMirror.cs
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iPhoneMirror
+          path: dist/iPhoneMirror
